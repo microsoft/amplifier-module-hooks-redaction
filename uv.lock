@@ -1,0 +1,8 @@
+version = 1
+revision = 3
+requires-python = ">=3.10"
+
+[[package]]
+name = "amplifier-module-hooks-redaction"
+version = "0.1.0"
+source = { editable = "." }

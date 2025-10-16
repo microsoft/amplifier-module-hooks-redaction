@@ -1,0 +1,29 @@
+[project]
+name = "amplifier-module-hooks-redaction"
+version = "0.1.0"
+description = "Redaction hook for Amplifier (secrets/PII scrubbing)"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Microsoft MADE:Explorations Team" },
+]
+
+[project.entry-points."amplifier.modules"]
+hooks-redaction = "amplifier_module_hooks_redaction:mount"
+
+[build-system]
+requires = [
+    "hatchling",
+]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "amplifier_module_hooks_redaction",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
