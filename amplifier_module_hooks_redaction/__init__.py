@@ -54,13 +54,10 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
 
     async def handler(event: str, data: dict[str, Any]) -> HookResult:
         try:
-            redacted = _scrub(data.get("data", data), rules, allowlist)
-            if "data" in data:
-                data["data"] = redacted
-            else:
-                if isinstance(redacted, dict):
-                    data.clear()
-                    data.update(redacted)
+            redacted = _scrub(data, rules, allowlist)
+            if isinstance(redacted, dict):
+                data.clear()
+                data.update(redacted)
             data["redaction"] = {"applied": True, "rules": rules}
         except Exception as e:
             logger.debug(f"Redaction error: {e}")
