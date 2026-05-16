@@ -164,6 +164,29 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
         "provider:request",
         "provider:response",
         "provider:error",
+        # LLM text events — carry the actual content of LLM turns.
+        #
+        # These were previously missing from the subscription list, which meant
+        # 100% of LLM text events reached events.jsonl without redaction applied:
+        #
+        #   llm:request      — full message history in data.raw.messages; each
+        #                       message may include prior LLM turns that echoed
+        #                       secrets back to the model.
+        #   llm:response     — full API response in data.raw; content blocks in
+        #                       data.raw.content[*].text carry the LLM's reply.
+        #   content_block:end — the streamed LLM response text in data.block.text.
+        #
+        # The kernel's Modify-chain (hooks.rs:231) propagates redaction mutations
+        # to all subsequent handlers including hooks-logging, so events.jsonl will
+        # now contain redacted text after this fix. This also affects streaming-ui
+        # rendering — secrets in LLM output will be masked at the terminal, which
+        # is the correct default for privacy.
+        #
+        # _scrub() already traverses arbitrary nested dicts/lists, so adding
+        # these subscriptions is sufficient — no structural changes needed.
+        "llm:request",
+        "llm:response",
+        "content_block:end",
         "tool:pre",
         "tool:post",
         "tool:error",
