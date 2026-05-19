@@ -3,9 +3,42 @@ Redaction hook: masks secrets/PII in event data for logging.
 Register with higher priority than logging.
 
 Uses HookResult(action="modify") to return redacted copies rather than
-mutating the shared event data dict in-place. Events that feed back into
-LLM context (tool:pre, tool:post) are skipped to avoid corrupting tool
-results the model needs verbatim (e.g. session IDs, timestamps).
+mutating the shared event data dict in-place.
+
+PR8 overhaul — invert scanning model
+======================================
+
+OLD approach (blanket scan + allowlist):
+    _scrub() walked the entire event dict and redacted every string it found,
+    with a DEFAULT_ALLOWLIST of structural field names (session_id, timestamp,
+    tool_name, …) that were skipped to prevent false-positive PII redaction.
+    tool:pre and tool:post events were skipped entirely to avoid corrupting
+    tool I/O the model needs verbatim — creating a gap where PII in tool
+    inputs and outputs was never redacted.
+
+    Problems:
+    • Every new structural field had to be manually added to the allowlist or
+      it would be redacted by the phone/email regexes (ISO timestamps look like
+      phone numbers; UUID hex segments trigger the phone pattern; filesystem
+      paths with dots trigger the email pattern).
+    • The skip_events gap meant real PII in tool:pre / tool:post "input" and
+      "output" payloads was never redacted — the very events most likely to
+      carry user-provided data.
+
+NEW approach (targeted content-field scan):
+    _scrub_targeted() only applies redaction to values whose dict KEY is in
+    DEFAULT_SCAN_FIELDS ("content", "input", "output", "messages", …).
+    Everything else is traversed but scalars are left untouched.
+
+    Benefits:
+    • Structural fields (session_id, timestamp, tool_name, …) are safe by
+      construction — they are never inside a scan_field key — no allowlist
+      needed, no false positives.
+    • tool:pre and tool:post are now fully scanned because _scrub_targeted
+      only touches the "input"/"output"/"content" keys inside them, leaving
+      the envelope fields intact.
+    • The scan_fields set is additive-only at mount() time: users extend
+      DEFAULT_SCAN_FIELDS but cannot reduce it.
 """
 
 from __future__ import annotations
@@ -18,8 +51,8 @@ import re
 from collections.abc import Set as AbstractSet
 from typing import Any
 
-from amplifier_core import HookResult
-from amplifier_core import ModuleCoordinator
+from amplifier_core import HookResult  # type: ignore[import-untyped]
+from amplifier_core import ModuleCoordinator  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 
@@ -36,64 +69,40 @@ PII_PATTERNS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Default allowlist — structural event fields that must never be redacted.
+# PR8: DEFAULT_SCAN_FIELDS — replaces DEFAULT_ALLOWLIST entirely.
 #
-# WHAT: These are infrastructure/envelope fields used for session correlation,
-#       lineage tracking, event ordering, and trace identification.
+# WHAT: The set of dict-key names that carry free-form, user- or LLM-authored
+#       text.  Only values under these keys are passed through _scrub_value();
+#       all other keys traverse into nested dicts/lists but their scalar
+#       values are returned unchanged.
 #
-# WHY:  Two PII regex patterns produce systematic false positives on these
-#       structural fields:
+# WHY:  Scanning content-bearing fields is the correct abstraction.  The old
+#       allowlist was an inverted safety net that required enumerating every
+#       structural field to protect it.  This set is the positive contract:
+#       "these fields may carry PII — check them".
 #
-#       1. Phone regex  \+?\d[\d\s().-]{7,}\d  matches ISO timestamps
-#          (e.g. "2026-02-20T14:30:00Z" → "2026-02-20" triggers the pattern)
-#          and numeric runs inside UUIDs (e.g. "446655440000" inside
-#          "550e8400-e29b-41d4-a716-446655440000"). Every event carries a
-#          timestamp from the kernel's emit(), so without the allowlist every
-#          event's timestamp is replaced with [REDACTED:PII].
-#
-#       2. Email regex  [A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}
-#          can match username fragments when project slugs derived from
-#          filesystem paths (e.g. /home/user/my.project) carry dot-separated
-#          segments into event fields that happen to resemble local-part@domain.
-#
-#       Together these cause critical identifiers to display as [REDACTED:PII],
-#       breaking event correlation, session lineage trees, and trace
-#       verification.
-#
-# HOW:  These defaults are merged (union) with user-provided
-#       config["allowlist"] entries at mount() time. Users extend but never
-#       replace the defaults.
+# HOW:  config["scan_fields"] at mount() time is unioned with the defaults so
+#       integrators can register custom field names (e.g. "user_query") without
+#       reducing core coverage.
 # ---------------------------------------------------------------------------
-DEFAULT_ALLOWLIST: frozenset[str] = frozenset(
+DEFAULT_SCAN_FIELDS: frozenset[str] = frozenset(
     {
-        # Infrastructure envelope — present on every event via emit().
-        # session_id and parent_id are the primary keys for event correlation
-        # and session lineage.
-        "session_id",
-        "parent_id",
-        "timestamp",
-        # Session lineage — parent ID in session:fork events
-        "parent",
-        # Event classification
-        "lvl",
-        "level",
-        # Correlation identifiers — join related events across the lifecycle
-        "tool_name",
-        "provider",
-        "orchestrator",
-        "status",
-        # Streaming envelope
-        "type",
-        "ts",
-        "seq",
-        "turn_id",
-        "span_id",
-        "parent_span_id",
+        "content",
+        "message",
+        "messages",
+        "output",
+        "input",
+        "instruction",
+        "text",
+        "user_message",
+        "system_prompt",
+        "description",
     }
 )
 
 
 def _mask_text(s: str, rules: list[str]) -> str:
+    """Apply active redaction rules to a single string value."""
     out = s
     if "secrets" in rules:
         for pat in SECRET_PATTERNS:
@@ -104,48 +113,85 @@ def _mask_text(s: str, rules: list[str]) -> str:
     return out
 
 
-def _scrub(
-    obj: Any, rules: list[str], allowlist: AbstractSet[str], path: str = ""
-) -> Any:
-    if path in allowlist:
-        return obj
+def _scrub_value(obj: Any, rules: list[str]) -> Any:
+    """Recursively redact every string within a content-bearing value.
+
+    Called once a scan_field key has been identified.  The value may be a
+    plain string, a list of message dicts, or any arbitrarily nested
+    structure — every string leaf is passed through _mask_text().
+
+    This function does NOT check scan_fields; it assumes the caller has
+    already determined that the entire subtree should be scrubbed.
+    """
     if isinstance(obj, str):
         return _mask_text(obj, rules)
     if isinstance(obj, list):
-        return [_scrub(v, rules, allowlist, f"{path}[{i}]") for i, v in enumerate(obj)]
+        return [_scrub_value(v, rules) for v in obj]
+    if isinstance(obj, dict):
+        return {k: _scrub_value(v, rules) for k, v in obj.items()}
+    return obj
+
+
+def _scrub_targeted(
+    obj: Any,
+    rules: list[str],
+    scan_fields: AbstractSet[str],
+    key: str = "",
+) -> Any:
+    """Targeted scrub: only redact values under known content-carrying fields.
+
+    Traversal contract:
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ dict  → for each (k, v):                                            │
+    │           k in scan_fields → fully scrub v via _scrub_value()       │
+    │           otherwise        → recurse into v (structural traversal)  │
+    │ list  → recurse into each element (key context preserved)           │
+    │ other → return unchanged   ← structural scalars never redacted      │
+    └─────────────────────────────────────────────────────────────────────┘
+
+    This means structural scalars (IDs, timestamps, counts, booleans)
+    sitting directly in a dict are NEVER touched unless their parent key
+    is a scan_field.  The phone and email regexes cannot produce false
+    positives on session_id, timestamp, tool_name, etc.
+    """
     if isinstance(obj, dict):
         return {
-            k: _scrub(v, rules, allowlist, f"{path}.{k}" if path else k)
+            k: _scrub_value(v, rules)
+            if k in scan_fields
+            else _scrub_targeted(v, rules, scan_fields, k)
             for k, v in obj.items()
         }
+    if isinstance(obj, list):
+        return [_scrub_targeted(v, rules, scan_fields, key) for v in obj]
+    # Scalar not under a scan_field key — return as-is.
     return obj
 
 
 async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = None):
     config = config or {}
     rules = list(config.get("rules", ["secrets", "pii-basic"]))
-    # Effective allowlist = built-in structural fields ∪ user-provided entries.
-    # Users extend but never reduce the defaults.
-    allowlist = DEFAULT_ALLOWLIST | set(config.get("allowlist", []))
+
+    # PR8: scan_fields is additive — integrators extend DEFAULT_SCAN_FIELDS,
+    # they cannot reduce it.  This is the symmetric counterpart to the old
+    # allowlist that was also additive.
+    scan_fields: AbstractSet[str] = DEFAULT_SCAN_FIELDS | frozenset(
+        config.get("scan_fields", [])
+    )
     priority = int(config.get("priority", 10))
 
-    # Events whose data feeds back into LLM context. Redacting these
-    # corrupts tool results the model needs verbatim (session IDs, etc.).
-    context_events = set(
-        config.get(
-            "skip_events",
-            [
-                "tool:pre",
-                "tool:post",
-            ],
-        )
-    )
-
     async def handler(event: str, data: dict[str, Any]) -> HookResult:
-        if event in context_events:
-            return HookResult(action="continue")
+        # PR8: NO skip_events / context_events guard.
+        #
+        # tool:pre and tool:post no longer need to be skipped because
+        # _scrub_targeted only touches content-bearing keys ("input",
+        # "output", "content", …).  Structural envelope fields
+        # (session_id, timestamp, tool_name, status, …) are left intact
+        # by construction — they are not scan_field keys.
+        #
+        # Removing the skip closes the security gap where PII in tool
+        # inputs and outputs was never redacted.
         try:
-            redacted = _scrub(data, rules, allowlist)
+            redacted = _scrub_targeted(data, rules, scan_fields)
             if isinstance(redacted, dict):
                 redacted["redaction"] = {"applied": True, "rules": rules}
                 return HookResult(action="modify", data=redacted)
@@ -153,7 +199,8 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
             logger.debug(f"Redaction error: {e}")
         return HookResult(action="continue")
 
-    # Subscribe to the canonical event set
+    # Subscribe to the canonical event set.
+    # tool:pre and tool:post are included and no longer bypassed.
     events = [
         "session:start",
         "session:end",
