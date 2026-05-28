@@ -89,6 +89,8 @@ DEFAULT_ALLOWLIST: frozenset[str] = frozenset(
         "turn_id",
         "span_id",
         "parent_span_id",
+        "model",
+        "usage.cost_usd",
     }
 )
 
