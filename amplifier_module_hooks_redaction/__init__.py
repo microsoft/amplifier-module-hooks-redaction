@@ -15,6 +15,7 @@ __amplifier_module_type__ = "hook"
 
 import logging
 import re
+from collections.abc import Sequence
 from collections.abc import Set as AbstractSet
 from typing import Any
 
@@ -23,12 +24,40 @@ from amplifier_core import ModuleCoordinator
 
 logger = logging.getLogger(__name__)
 
+# Public API. The redaction primitives (mask_text, scrub) and the pattern/
+# allowlist constants are exported so consumer apps can depend on the vetted
+# masker directly instead of vendoring a private copy.
+__all__ = [
+    "SECRET_PATTERNS",
+    "PII_PATTERNS",
+    "DEFAULT_ALLOWLIST",
+    "mask_text",
+    "scrub",
+    "mount",
+]
+
+# Default rule set applied when a caller does not specify one.
+DEFAULT_RULES: tuple[str, ...] = ("secrets", "pii-basic")
+
 SECRET_PATTERNS = [
     re.compile(r"AKIA[0-9A-Z]{16}"),  # AWS Access Key
     re.compile(
         r"(?:xox[abpr]-[A-Za-z0-9-]+|AIza[0-9A-Za-z-_]{35})"
     ),  # Slack/Google keys
     re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),  # JWT
+    # Provider/app token formats. These are all PREFIX-ANCHORED and structurally
+    # distinctive, so they match real credentials in free-form text without
+    # touching ordinary content. (Deliberately NO generic high-entropy rules
+    # like bare long-hex or long-base64: hooks-redaction runs by default on the
+    # live event stream, and those catch-alls would mask git SHAs, sha256/docker
+    # digests, dashless UUIDs, and base64 blobs in normal terminal/LLM output.)
+    re.compile(r"\bghp_[A-Za-z0-9_]{10,}"),  # GitHub personal access token
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{10,}"),  # GitHub fine-grained PAT
+    re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}"),  # Anthropic API key (sk-ant-...)
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{10,}"),  # OpenAI / generic "sk-" API key
+    re.compile(r"\bGOCSPX-[A-Za-z0-9_\-]{10,}"),  # Google OAuth client secret
+    re.compile(r"\b1//[A-Za-z0-9_\-]{20,}"),  # Google OAuth refresh token
+    re.compile(r"\btp_[A-Za-z0-9_]{10,}"),  # Team Pulse token
 ]
 PII_PATTERNS = [
     re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
@@ -95,8 +124,24 @@ DEFAULT_ALLOWLIST: frozenset[str] = frozenset(
 )
 
 
-def _mask_text(s: str, rules: list[str]) -> str:
-    out = s
+def mask_text(text: str, rules: Sequence[str] = DEFAULT_RULES) -> str:
+    """Mask secrets and PII inside a single string.
+
+    This is the public, pure string masker. It applies SECRET_PATTERNS first
+    (replacing matches with ``[REDACTED:SECRET]``) and then PII_PATTERNS
+    (replacing matches with ``[REDACTED:PII]``), gated by ``rules``.
+
+    Args:
+        text: The string to scrub.
+        rules: Which rule categories to apply. ``"secrets"`` enables
+            SECRET_PATTERNS; ``"pii-basic"`` enables PII_PATTERNS. Defaults to
+            both. Unknown rule names are ignored.
+
+    Returns:
+        The masked string. Has no allowlist awareness; callers that need
+        structural-field protection should use :func:`scrub`.
+    """
+    out = text
     if "secrets" in rules:
         for pat in SECRET_PATTERNS:
             out = pat.sub("[REDACTED:SECRET]", out)
@@ -106,18 +151,38 @@ def _mask_text(s: str, rules: list[str]) -> str:
     return out
 
 
-def _scrub(
-    obj: Any, rules: list[str], allowlist: AbstractSet[str], path: str = ""
+def scrub(
+    obj: Any,
+    rules: Sequence[str] = DEFAULT_RULES,
+    allowlist: AbstractSet[str] = DEFAULT_ALLOWLIST,
+    path: str = "",
 ) -> Any:
+    """Recursively scrub secrets/PII from an arbitrary JSON-like structure.
+
+    Strings are masked via :func:`mask_text`; dicts and lists are traversed,
+    building a dotted ``path`` (``a.b`` for nested keys, ``a[0]`` for list
+    elements). Any subtree whose ``path`` is in ``allowlist`` is returned
+    untouched. Non-container, non-string values are returned as-is.
+
+    Args:
+        obj: The value to scrub (str, list, dict, or scalar).
+        rules: Rule categories to apply (see :func:`mask_text`).
+        allowlist: Dotted paths whose subtrees are exempt from redaction.
+            Defaults to DEFAULT_ALLOWLIST.
+        path: Internal recursion accumulator; callers normally omit it.
+
+    Returns:
+        A redacted copy mirroring the input structure.
+    """
     if path in allowlist:
         return obj
     if isinstance(obj, str):
-        return _mask_text(obj, rules)
+        return mask_text(obj, rules)
     if isinstance(obj, list):
-        return [_scrub(v, rules, allowlist, f"{path}[{i}]") for i, v in enumerate(obj)]
+        return [scrub(v, rules, allowlist, f"{path}[{i}]") for i, v in enumerate(obj)]
     if isinstance(obj, dict):
         return {
-            k: _scrub(v, rules, allowlist, f"{path}.{k}" if path else k)
+            k: scrub(v, rules, allowlist, f"{path}.{k}" if path else k)
             for k, v in obj.items()
         }
     return obj
@@ -147,7 +212,7 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
         if event in context_events:
             return HookResult(action="continue")
         try:
-            redacted = _scrub(data, rules, allowlist)
+            redacted = scrub(data, rules, allowlist)
             if isinstance(redacted, dict):
                 redacted["redaction"] = {"applied": True, "rules": rules}
                 return HookResult(action="modify", data=redacted)
@@ -184,7 +249,7 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
         # rendering — secrets in LLM output will be masked at the terminal, which
         # is the correct default for privacy.
         #
-        # _scrub() already traverses arbitrary nested dicts/lists, so adding
+        # scrub() already traverses arbitrary nested dicts/lists, so adding
         # these subscriptions is sufficient — no structural changes needed.
         "llm:request",
         "llm:response",

@@ -5,10 +5,10 @@ strings like "16.57469425", replacing them with [REDACTED:PII].  The same phone
 regex matches model names with date suffixes like "claude-sonnet-4-20250514".
 
 Both fields are structured metadata that must never be redacted.  The fix adds
-them to DEFAULT_ALLOWLIST so _scrub() returns them untouched.
+them to DEFAULT_ALLOWLIST so scrub() returns them untouched.
 """
 
-from amplifier_module_hooks_redaction import DEFAULT_ALLOWLIST, _scrub
+from amplifier_module_hooks_redaction import DEFAULT_ALLOWLIST, scrub
 
 
 RULES = ["secrets", "pii-basic"]
@@ -33,7 +33,7 @@ class TestCostUsdAllowlist:
             },
             "status": "ok",
         }
-        result = _scrub(event, RULES, DEFAULT_ALLOWLIST)
+        result = scrub(event, RULES, DEFAULT_ALLOWLIST)
 
         assert result["usage"]["cost_usd"] == "16.57469425", (
             f"cost_usd must survive redaction, got: {result['usage']['cost_usd']!r}"
@@ -46,7 +46,7 @@ class TestCostUsdAllowlist:
         this test documents that "16.57469425" does match the phone pattern.
         """
         event = {"not_allowlisted": "16.57469425"}
-        result = _scrub(event, RULES, DEFAULT_ALLOWLIST)
+        result = scrub(event, RULES, DEFAULT_ALLOWLIST)
 
         assert "[REDACTED:PII]" in result["not_allowlisted"], (
             "Cost-like value must trigger phone regex when not allowlisted "
@@ -71,7 +71,7 @@ class TestModelAllowlist:
             "status": "ok",
             "usage": {"input_tokens": 100},
         }
-        result = _scrub(event, RULES, DEFAULT_ALLOWLIST)
+        result = scrub(event, RULES, DEFAULT_ALLOWLIST)
 
         assert result["model"] == "claude-sonnet-4-20250514", (
             f"model must survive redaction, got: {result['model']!r}"
@@ -84,7 +84,7 @@ class TestModelAllowlist:
         triggers the phone regex when the field is not allowlisted.
         """
         event = {"not_allowlisted": "claude-sonnet-4-20250514"}
-        result = _scrub(event, RULES, DEFAULT_ALLOWLIST)
+        result = scrub(event, RULES, DEFAULT_ALLOWLIST)
 
         assert result["not_allowlisted"] != "claude-sonnet-4-20250514", (
             "Model name must trigger PII pattern when not allowlisted "

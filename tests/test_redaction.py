@@ -6,7 +6,7 @@ numeric runs in UUIDs matching the phone regex) must survive scrubbing
 untouched, while secrets/PII in other fields are still redacted.
 """
 
-from amplifier_module_hooks_redaction import DEFAULT_ALLOWLIST, _scrub
+from amplifier_module_hooks_redaction import DEFAULT_ALLOWLIST, scrub
 
 
 RULES = ["secrets", "pii-basic"]
@@ -33,7 +33,7 @@ class TestDefaultAllowlist:
             "type": "session:start",
             "status": "active",
         }
-        result = _scrub(event, RULES, DEFAULT_ALLOWLIST)
+        result = scrub(event, RULES, DEFAULT_ALLOWLIST)
 
         # Every field here is in DEFAULT_ALLOWLIST — all must survive intact
         assert result["session_id"] == "550e8400-e29b-41d4-a716-446655440000"
@@ -55,7 +55,7 @@ class TestDefaultAllowlist:
             "session_id": "550e8400-e29b-41d4-a716-446655440000",
             "parent_id": "00000000-0000-0000-0000-000000000000",
         }
-        result = _scrub(event, RULES, DEFAULT_ALLOWLIST)
+        result = scrub(event, RULES, DEFAULT_ALLOWLIST)
 
         assert result["session_id"] == "550e8400-e29b-41d4-a716-446655440000"
         assert result["parent_id"] == "00000000-0000-0000-0000-000000000000"
@@ -71,7 +71,7 @@ class TestDefaultAllowlist:
             "not_allowlisted_ts": "2026-02-20T14:30:00Z",
             "not_allowlisted_uuid": "550e8400-e29b-41d4-a716-446655440000",
         }
-        result = _scrub(event, RULES, DEFAULT_ALLOWLIST)
+        result = scrub(event, RULES, DEFAULT_ALLOWLIST)
 
         # These fields are NOT in the allowlist, so PII patterns fire
         assert "[REDACTED:PII]" in result["not_allowlisted_ts"]
@@ -89,7 +89,7 @@ class TestDefaultAllowlist:
             "message": "Contact bob@corp.net for access",  # NOT allowlisted — redacted
             "api_key": "AKIAIOSFODNN7EXAMPLE",  # NOT allowlisted — redacted
         }
-        result = _scrub(event, RULES, DEFAULT_ALLOWLIST)
+        result = scrub(event, RULES, DEFAULT_ALLOWLIST)
 
         # Allowlisted field survives
         assert result["session_id"] == "550e8400-e29b-41d4-a716-446655440000"
@@ -136,7 +136,7 @@ class TestUserConfigMerge:
             "custom_id": "alice@example.com",  # user allowlist — survives despite PII match
             "notes": "alice@example.com",  # NOT allowlisted — redacted
         }
-        result = _scrub(event, RULES, effective)
+        result = scrub(event, RULES, effective)
 
         assert result["session_id"] == "550e8400-e29b-41d4-a716-446655440000"
         assert result["custom_id"] == "alice@example.com"  # protected by user entry
