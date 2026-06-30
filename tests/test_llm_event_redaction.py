@@ -7,7 +7,7 @@ reached events.jsonl with no redaction applied (empirically confirmed:
 347/347 content_block:end, 316/316 llm:request, 316/316 llm:response
 in a real session with full text unredacted).
 
-The _scrub() function already handles nested dicts/lists recursively,
+The scrub() function already handles nested dicts/lists recursively,
 so the fix is purely subscription coverage: add the three events to
 the registration list in mount().
 """
@@ -40,7 +40,7 @@ async def test_llm_response_text_redacted(coordinator):
     emit() returns the raw data unmodified — the secret survives intact
     and the redaction marker is absent.
 
-    After the fix: hooks-redaction IS subscribed. _scrub() traverses
+    After the fix: hooks-redaction IS subscribed. scrub() traverses
     raw > content > [0] > text and replaces the secret. The redaction
     marker confirms the handler ran.
     """
@@ -65,7 +65,7 @@ async def test_content_block_end_text_redacted(coordinator):
     Before the fix: hooks-redaction is NOT subscribed to content_block:end.
     The emitted text (the LLM's actual response) arrives unredacted.
 
-    After the fix: hooks-redaction IS subscribed. _scrub() traverses
+    After the fix: hooks-redaction IS subscribed. scrub() traverses
     block > text and replaces the secret.
     """
     data = {"block": {"text": f"Hello, your token is {AWS_KEY}"}}
@@ -90,7 +90,7 @@ async def test_llm_request_messages_redacted(coordinator):
     The full message history (including prior LLM turns that may contain
     secrets the model echoed) is logged unredacted.
 
-    After the fix: hooks-redaction IS subscribed. _scrub() traverses
+    After the fix: hooks-redaction IS subscribed. scrub() traverses
     raw > messages > [0] > content and replaces the secret.
     """
     data = {"raw": {"messages": [{"role": "user", "content": f"My key is {AWS_KEY}"}]}}
