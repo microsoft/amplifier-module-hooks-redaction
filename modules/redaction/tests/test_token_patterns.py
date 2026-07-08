@@ -11,7 +11,7 @@ would mask ordinary content (git SHAs, sha256/docker digests, dashless UUIDs,
 base64 blobs). The regression guard at the bottom locks that in.
 """
 
-from amplifier_module_hooks_redaction import mask_text
+from redaction import mask_text
 
 SECRET = "[REDACTED:SECRET]"
 

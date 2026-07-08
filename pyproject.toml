@@ -1,11 +1,14 @@
 [project]
 name = "amplifier-module-hooks-redaction"
 version = "0.1.0"
-description = "Redaction hook for Amplifier (secrets/PII scrubbing)"
+description = "Redaction hook for Amplifier (secrets/PII scrubbing) — thin wrapper over the redaction library."
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
     { name = "Microsoft MADE:Explorations Team" },
+]
+dependencies = [
+    "redaction @ git+https://github.com/microsoft/amplifier-module-hooks-redaction@main#subdirectory=modules/redaction",
 ]
 
 [project.entry-points."amplifier.modules"]
