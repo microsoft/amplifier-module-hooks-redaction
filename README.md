@@ -1,13 +1,77 @@
-# Amplifier Redaction Hook Module
+# amplifier-module-hooks-redaction
 
-Masks secrets/PII before logging.
+An Amplifier redaction hook, plus the standalone `redaction` library it wraps.
 
-## Overview
+This repository follows a two-tier "hook at repo root + shared library in a
+subdirectory" layout (mirroring the `amplifier-bundle-context-intelligence`
+pattern). The hook stays at the repo root — exactly where the ecosystem
+already points — so existing consumers see zero change to its install path,
+entry point, or package name. The reusable core lives in `modules/redaction/`.
 
-This hook module integrates with Amplifier's hook system to redact sensitive information from logs. It scans messages for patterns like email addresses, phone numbers, credit card numbers, and custom regex patterns, replacing them with `[REDACTED]`.
+```
+amplifier-module-hooks-redaction/    (repo root == the Amplifier hook)
+├── amplifier_module_hooks_redaction/   # the hook package (mount + glue)
+├── tests/                              # hook-integration tests
+└── modules/
+    └── redaction/                      # the standalone "redaction" library
+        ├── redaction/                  # zero-Amplifier-dependency core
+        └── tests/                      # unit tests for the library
+```
+
+## The Amplifier hook (repo root)
+
+`amplifier-module-hooks-redaction` (package `amplifier_module_hooks_redaction`,
+entry point `hooks-redaction`) is a thin Amplifier hook that wires
+`mask_text`/`scrub` into the Amplifier event pipeline. It masks secrets/PII in
+event data before logging, and re-exports the `redaction` public API for
+backward compatibility with existing consumers.
+
+It is installed the same way it always was:
+
+```bash
+pip install "amplifier-module-hooks-redaction @ git+https://github.com/microsoft/amplifier-module-hooks-redaction@main"
+```
+
+The hook depends on the shared library via a git `#subdirectory` reference:
+
+```
+redaction @ git+https://github.com/microsoft/amplifier-module-hooks-redaction@main#subdirectory=modules/redaction
+```
 
 [!IMPORTANT]
 Register with higher priority than logging.
+
+## The `redaction` library (`modules/redaction/`)
+
+`redaction` is a pure-stdlib (`re`, `typing`, `collections.abc`) library with
+**zero Amplifier dependencies**. Consumer applications that only need the
+masking primitives — not the Amplifier hook plumbing — should depend on this
+package directly rather than vendoring a private copy or pulling in
+`amplifier_core`.
+
+Public API:
+
+- `mask_text(text: str, rules=DEFAULT_RULES) -> str` — mask secrets/PII in a
+  single string.
+- `scrub(obj, rules=DEFAULT_RULES, allowlist=DEFAULT_ALLOWLIST, path="") -> Any`
+  — recursively mask an arbitrary JSON-like structure (dict/list/scalar),
+  honoring an allowlist of dotted paths that must survive untouched.
+- `SECRET_PATTERNS`, `PII_PATTERNS`, `DEFAULT_ALLOWLIST`, `DEFAULT_RULES` —
+  the underlying pattern/allowlist/rule constants.
+
+Install it directly from the subdirectory:
+
+```bash
+pip install "redaction @ git+https://github.com/microsoft/amplifier-module-hooks-redaction@main#subdirectory=modules/redaction"
+```
+
+then:
+
+```python
+import redaction
+
+redaction.mask_text("my key is AKIAIOSFODNN7EXAMPLE")
+```
 
 ## Contributing
 

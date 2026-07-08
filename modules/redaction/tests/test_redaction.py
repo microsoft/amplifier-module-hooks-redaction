@@ -6,7 +6,7 @@ numeric runs in UUIDs matching the phone regex) must survive scrubbing
 untouched, while secrets/PII in other fields are still redacted.
 """
 
-from amplifier_module_hooks_redaction import DEFAULT_ALLOWLIST, scrub
+from redaction import DEFAULT_ALLOWLIST, scrub
 
 
 RULES = ["secrets", "pii-basic"]

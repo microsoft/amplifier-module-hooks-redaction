@@ -5,8 +5,8 @@ masker directly instead of vendoring a private copy. Each secret/PII pattern
 category is exercised, rule gating is verified, and idempotence is asserted.
 """
 
-from amplifier_module_hooks_redaction import mask_text
-from amplifier_module_hooks_redaction import scrub
+from redaction import mask_text
+from redaction import scrub
 
 SECRET = "[REDACTED:SECRET]"
 PII = "[REDACTED:PII]"
@@ -122,13 +122,13 @@ class TestScrubPublic:
 
 
 def test_all_exports_public_names():
-    import amplifier_module_hooks_redaction as mod
+    import redaction as mod
 
     assert set(mod.__all__) == {
         "SECRET_PATTERNS",
         "PII_PATTERNS",
         "DEFAULT_ALLOWLIST",
+        "DEFAULT_RULES",
         "mask_text",
         "scrub",
-        "mount",
     }

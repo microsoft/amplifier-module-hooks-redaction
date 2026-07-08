@@ -8,7 +8,7 @@ Both fields are structured metadata that must never be redacted.  The fix adds
 them to DEFAULT_ALLOWLIST so scrub() returns them untouched.
 """
 
-from amplifier_module_hooks_redaction import DEFAULT_ALLOWLIST, scrub
+from redaction import DEFAULT_ALLOWLIST, scrub
 
 
 RULES = ["secrets", "pii-basic"]
